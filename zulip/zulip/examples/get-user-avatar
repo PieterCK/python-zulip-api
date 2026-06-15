@@ -1,0 +1,24 @@
+#!/usr/bin/env python3
+
+import argparse
+
+usage = """get-user-avatar --user_id=<user_id> --email=<email address> [options]
+
+Get the avatar URL for a user.
+"""
+
+import zulip
+
+parser = zulip.add_default_arguments(argparse.ArgumentParser(usage=usage))
+parser.add_argument("--user_id", required=True)
+parser.add_argument("--email", required=True)
+options = parser.parse_args()
+
+client = zulip.init_from_options(options)
+
+print("Get user avatar by ID:")
+print(client.get_avatar_url_by_id(user_id=options.user_id))
+print(client.get_avatar_url_by_id(user_id=options.user_id, medium=True))
+print("Get user avatar by email:")
+print(client.get_avatar_url_by_email(email=options.email))
+print(client.get_avatar_url_by_email(email=options.email, medium=True))

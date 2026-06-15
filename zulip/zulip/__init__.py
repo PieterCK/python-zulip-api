@@ -46,6 +46,11 @@ logger = logging.getLogger(__name__)
 
 API_VERSTRING = "v1/"
 
+# Endpoints that respond with an HTTP 302 redirect to a resource (e.g. the
+# avatar endpoints redirect to the actual avatar image) rather than a JSON
+# body.
+REDIRECT_ENDPOINTS = ["avatar/"]
+
 # An optional parameter to `move_topic` and `update_message` actions
 # See eg. https://zulip.com/api/update-message#parameter-propagate_mode
 EditPropagateMode = Literal["change_one", "change_all", "change_later"]
@@ -583,6 +588,7 @@ class Client:
         longpolling: bool = False,
         files: Optional[List[IO[Any]]] = None,
         timeout: Optional[float] = None,
+        non_api_or_json_url: bool = False,
     ) -> Dict[str, Any]:
         if files is None:
             files = []
@@ -636,6 +642,8 @@ class Client:
                 else:
                     print("Failed!")
 
+        base_url = self.base_url.removesuffix("api/") if non_api_or_json_url else self.base_url
+        is_redirect_endpoint = any(url.startswith(prefix) for prefix in REDIRECT_ENDPOINTS)
         while True:
             try:
                 kwarg = "params" if method == "GET" else "data"
@@ -648,8 +656,9 @@ class Client:
                 # Actually make the request!
                 res = self.session.request(
                     method,
-                    urllib.parse.urljoin(self.base_url, url),
+                    urllib.parse.urljoin(base_url, url),
                     timeout=request_timeout,
+                    allow_redirects=not is_redirect_endpoint,
                     **kwargs,
                 )
 
@@ -683,9 +692,7 @@ class Client:
                     # go into retry logic, because the most likely scenario here is
                     # that somebody just hasn't started their server, or they passed
                     # in an invalid site.
-                    raise UnrecoverableNetworkError(
-                        "cannot connect to server " + self.base_url
-                    ) from e
+                    raise UnrecoverableNetworkError("cannot connect to server " + base_url) from e
 
                 if error_retry(""):
                     continue
@@ -694,6 +701,17 @@ class Client:
             except Exception:
                 # We'll split this out into more cases as we encounter new bugs.
                 raise
+
+            # This is not a real object these endpoints would return. Redirect endpoints
+            # have no JSON body; the resource URL lives in the "Location" header of the
+            # 3xx response.
+            if is_redirect_endpoint and res.is_redirect:
+                end_error_retry(True)
+                return {
+                    "result": "success",
+                    "msg": "",
+                    "url": res.headers.get("Location"),
+                }
 
             try:
                 json_result = res.json()
@@ -716,6 +734,7 @@ class Client:
         longpolling: bool = False,
         files: Optional[List[IO[Any]]] = None,
         timeout: Optional[float] = None,
+        non_api_or_json_url: bool = False,
     ) -> Dict[str, Any]:
         if request is None:
             request = dict()
@@ -723,14 +742,15 @@ class Client:
         for k, v in request.items():
             if v is not None:
                 marshalled_request[k] = v
-        versioned_url = API_VERSTRING + (url if url is not None else "")
+        url = url or ""
         return self.do_api_query(
             marshalled_request,
-            versioned_url,
+            url=url if non_api_or_json_url else API_VERSTRING + url,
             method=method,
             longpolling=longpolling,
             files=files,
             timeout=timeout,
+            non_api_or_json_url=non_api_or_json_url,
         )
 
     def call_on_each_event(
@@ -1770,6 +1790,38 @@ class Client:
             method="PATCH",
             request=request,
         )
+
+    def get_avatar_url_by_id(self, user_id: int, medium: bool = False) -> str:
+        """
+        If `medium=False`, the default size will be returned. Avatar sizes:
+            - default `100x100` px
+            - medium `500x500` px
+
+        Example usage:
+
+        >>> client.get_avatar_by_id(user_id=8, medium=True)
+        """
+        url = f"avatar/{user_id}"
+        if medium:
+            url += "/medium"
+        response = self.call_endpoint(url=url, method="GET", non_api_or_json_url=True)
+        return response["url"]
+
+    def get_avatar_url_by_email(self, email: str, medium: bool = False) -> str:
+        """
+        If `medium=False`, the default size will be returned. Avatar sizes:
+            - default `100x100` px
+            - medium `500x500` px
+
+        Example usage:
+
+        >>> client.get_avatar_by_email(email="hamlet@zulip.com", medium=True)
+        """
+        url = f"avatar/{email}"
+        if medium:
+            url += "/medium"
+        response = self.call_endpoint(url=url, method="GET", non_api_or_json_url=True)
+        return response["url"]
 
 
 class ZulipStream:
